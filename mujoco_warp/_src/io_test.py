@@ -1558,6 +1558,42 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.light_poscom0.numpy()[0, 0], mjm.light_poscom0[0], "light_poscom0")
     _assert_eq(m.light_dir0.numpy()[0, 0], mjm.light_dir0[0], "light_dir0")
 
+  def test_put_model_render_light_and_material_fields(self):
+    """Light and material rendering fields auto-load via put_model."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <material name="m1" specular="0.7" shininess="0.5" emission="0.1" reflectance="0.3"/>
+      </asset>
+      <worldbody>
+        <light name="spot" pos="0 0 3" dir="0 0 -1"
+               attenuation="1 0.1 0.05" cutoff="25" exponent="10"
+               ambient="0.1 0.1 0.1" diffuse="0.6 0.5 0.4" specular="0.7 0.7 0.7"
+               bulbradius="0.05"/>
+        <light name="dir" pos="0 0 5" dir="0 0 -1" directional="true"
+               diffuse="0.3 0.3 0.3"/>
+        <geom type="sphere" size="0.5" material="m1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    _assert_eq(m.light_attenuation.numpy(), mjm.light_attenuation, "light_attenuation")
+    _assert_eq(m.light_cutoff.numpy(), mjm.light_cutoff, "light_cutoff")
+    _assert_eq(m.light_exponent.numpy(), mjm.light_exponent, "light_exponent")
+    _assert_eq(m.light_ambient.numpy(), mjm.light_ambient, "light_ambient")
+    _assert_eq(m.light_diffuse.numpy(), mjm.light_diffuse, "light_diffuse")
+    _assert_eq(m.light_specular.numpy(), mjm.light_specular, "light_specular")
+    _assert_eq(m.light_bulbradius.numpy(), mjm.light_bulbradius, "light_bulbradius")
+    _assert_eq(m.light_intensity.numpy(), mjm.light_intensity, "light_intensity")
+    _assert_eq(m.light_range.numpy(), mjm.light_range, "light_range")
+
+    _assert_eq(m.mat_specular.numpy(), mjm.mat_specular, "mat_specular")
+    _assert_eq(m.mat_shininess.numpy(), mjm.mat_shininess, "mat_shininess")
+    _assert_eq(m.mat_emission.numpy(), mjm.mat_emission, "mat_emission")
+    _assert_eq(m.mat_reflectance.numpy(), mjm.mat_reflectance, "mat_reflectance")
+
   def test_set_const_idempotent(self):
     """Test calling set_const twice gives same results."""
     _, _, m, d = test_data.fixture(
