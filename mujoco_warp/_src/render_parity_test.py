@@ -20,12 +20,9 @@ of small numerical differences (per-pixel ray tracing vs per-vertex
 rasterization), but tight enough to catch regressions in lighting behavior.
 
 The full parity suite is built up incrementally across commits in the Phase 1
-PR; tests for features that are not yet implemented in mjwarp are decorated
-with ``unittest.expectedFailure`` and become passing tests as their feature is
-landed.
+PR. As each commit closes a parity gap, the corresponding test is enabled
+here.
 """
-
-import unittest
 
 import mujoco
 import numpy as np
@@ -318,7 +315,6 @@ class RenderParityTest(parameterized.TestCase):
     self.assertGreater(b_mean, g_mean + 5)
 
   # ---- emission ----
-  @unittest.expectedFailure  # commit 5 (emission) flips this on
   def test_emission_lights_geom_without_lights(self):
     """A material with high emission should be visible even with no lights."""
     mjm = mujoco.MjModel.from_xml_string(_FIXTURE_EMISSION)

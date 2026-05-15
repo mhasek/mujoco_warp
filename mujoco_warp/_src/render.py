@@ -608,7 +608,10 @@ def compute_lighting(
     )
 
     if shadow_hit:
-      visible = 0.3
+      # Binary shadow: matches MuJoCo OpenGL's shadow-map output (no partial
+      # shadow gray zone). Soft penumbra from `light_bulbradius` is a Phase 2
+      # feature.
+      visible = 0.0
 
   diffuse_contrib = ndotl * atten * visible
   spec_contrib = float(0.0)
@@ -653,6 +656,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     light_attenuation: wp.array[wp.vec3],
     light_cutoff: wp.array[float],
     light_exponent: wp.array[float],
+    light_ambient: wp.array[wp.vec3],
     light_diffuse: wp.array[wp.vec3],
     light_specular: wp.array[wp.vec3],
     flex_vertadr: wp.array[int],
@@ -661,6 +665,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_faceadr: wp.array[int],
     mat_texid: wp.array3d[int],
     mat_texrepeat: wp.array2d[wp.vec2],
+    mat_emission: wp.array[float],
     mat_specular: wp.array[float],
     mat_shininess: wp.array[float],
     mat_rgba: wp.array2d[wp.vec4],
@@ -847,25 +852,34 @@ def render(m: Model, d: Data, rc: RenderContext):
             )
             base_color = wp.cw_mul(base_color, tex_color)
 
-    result = wp.vec3(0.0, 0.0, 0.0)
-    if wp.static(rc.use_ambient_lighting):
-      len_n = wp.length(normal)
-      n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
-      n = wp.normalize(n)
-      hemispheric = 0.5 * (n[2] + 1.0)
-      ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
-      result = 0.5 * wp.cw_mul(base_color, ambient_color)
-
-    # Look up material specular/shininess (defaults match MuJoCo when no
-    # material is bound to the geom). Flex hits never have a material.
+    # Look up material specular/shininess/emission (defaults match MuJoCo when
+    # no material is bound to the geom). Flex hits never have a material.
     mat_spec = float(0.5)
     mat_shin_exp = float(0.5 * 128.0)
+    mat_emis = float(0.0)
     if geom_id != -2:
       mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
       if mat_id_for_spec >= 0:
         mat_spec = mat_specular[mat_id_for_spec]
         # MuJoCo stores shininess in [0, 1]; OpenGL uses the [0, 128] exponent.
         mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
+        mat_emis = mat_emission[mat_id_for_spec]
+
+    # Start with the emission term (self-illumination from the material).
+    result = base_color * mat_emis
+
+    if wp.static(rc.use_ambient_lighting):
+      # MuJoCo OpenGL applies a 0.3 global ambient floor only when there is
+      # no light source at all (no headlight and no user lights). When the
+      # headlight is active, it contributes its ambient color. Per-user-light
+      # ambient is additive and applied regardless of N·L or shadow.
+      if wp.static(rc.headlight_active):
+        result = result + wp.cw_mul(base_color, wp.static(rc.headlight_ambient))
+      elif wp.static(m.nlight == 0):
+        result = result + base_color * 0.3
+      for la in range(wp.static(m.nlight)):
+        if light_active[worldid % light_active.shape[0], la]:
+          result = result + wp.cw_mul(base_color, light_ambient[la])
 
     # View direction: from the hit point back toward the camera.
     view_dir = wp.normalize(-ray_dir_world)
@@ -998,6 +1012,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.light_attenuation,
       m.light_cutoff,
       m.light_exponent,
+      m.light_ambient,
       m.light_diffuse,
       m.light_specular,
       m.flex_vertadr,
@@ -1006,6 +1021,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.mesh_faceadr,
       m.mat_texid,
       m.mat_texrepeat,
+      m.mat_emission,
       m.mat_specular,
       m.mat_shininess,
       m.mat_rgba,
