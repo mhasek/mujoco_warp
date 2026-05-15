@@ -24,6 +24,8 @@ PR. As each commit closes a parity gap, the corresponding test is enabled
 here.
 """
 
+import pathlib
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -31,6 +33,8 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
+
+_GOLDEN_DIR = pathlib.Path(__file__).parent.parent / "test_data" / "golden_renders"
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -207,7 +211,8 @@ class RenderParityTest(parameterized.TestCase):
 
   The SSIM/L1 thresholds are deliberately loose: per-pixel ray-traced shading
   vs per-vertex rasterized shading will never agree exactly, but they should
-  respond to parameter changes the same way.
+  respond to parameter changes the same way. Per-test thresholds are set
+  empirically with margin below the observed mean.
   """
 
   # ---- headlight ----
@@ -322,6 +327,53 @@ class RenderParityTest(parameterized.TestCase):
 
     warp_rgb = _mjwarp_render(mjm, 64, 64)
     self.assertGreater(int(warp_rgb[..., 1].max()), 100, "emissive ball should be clearly visible (green channel)")
+
+  # ---- aggregate SSIM / L1 across canonical fixtures ----
+  # Per-fixture SSIM and L1 thresholds tuned with ~0.05 / +0.02 margin below
+  # the empirically observed values on the reference build. If a regression
+  # pushes scores below these, the test fails and the diff is small enough to
+  # be obviously something specific (e.g. a sign flip in compute_lighting).
+  _PARITY_FIXTURES = (
+    ("headlight_only", _FIXTURE_HEADLIGHT_ONLY, 0.70, 0.10),
+    ("spotlight", _FIXTURE_SPOTLIGHT, 0.60, 0.10),
+    ("specular", _FIXTURE_SPECULAR, 0.75, 0.07),
+    ("two_lights", _FIXTURE_TWO_LIGHTS, 0.75, 0.07),
+    ("emission", _FIXTURE_EMISSION, 0.65, 0.07),
+  )
+
+  @parameterized.named_parameters(*[(n, x, s, l1) for n, x, s, l1 in _PARITY_FIXTURES])
+  def test_ssim_vs_mujoco(self, xml: str, ssim_threshold: float, l1_threshold: float):
+    """Mjwarp output must respond to lighting params like MuJoCo OpenGL does."""
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    warp_rgb = _mjwarp_render(mjm, 64, 64)
+    mj_rgb = _mujoco_render(mjm, 64, 64)
+    ssim = _ssim(warp_rgb, mj_rgb)
+    l1 = _mean_l1(warp_rgb, mj_rgb)
+    self.assertGreater(ssim, ssim_threshold, f"SSIM too low: {ssim:.4f} < {ssim_threshold}")
+    self.assertLess(l1, l1_threshold, f"mean L1 too high: {l1:.4f} > {l1_threshold}")
+
+  # ---- golden-image regression ----
+  def test_golden_headlight_only(self):
+    """Bit-stable regression check against a checked-in golden snapshot.
+
+    mjwarp's headlight render of a fixed fixture must stay within a small
+    per-channel tolerance of `test_data/golden_renders/headlight_only_32.npy`.
+    A larger drift means a lighting computation changed unexpectedly;
+    regenerate the snapshot only after intentional updates.
+    """
+    golden_path = _GOLDEN_DIR / "headlight_only_32.npy"
+    if not golden_path.exists():
+      self.skipTest(f"no golden snapshot at {golden_path}")
+    expected = np.load(golden_path)
+    self.assertEqual(expected.shape, (32, 32, 3))
+
+    mjm = mujoco.MjModel.from_xml_string(_FIXTURE_HEADLIGHT_ONLY)
+    actual = _mjwarp_render(mjm, 32, 32)
+    diff = np.abs(actual.astype(np.int32) - expected.astype(np.int32))
+    # Allow tiny per-channel drift (rounding/float ordering between Warp
+    # builds and CPU/CUDA backends) but flag substantive changes.
+    self.assertLess(diff.max(), 5, f"max channel diff = {int(diff.max())} (>= 5)")
+    self.assertLess(float(diff.mean()), 0.5, f"mean channel diff = {float(diff.mean())} (>= 0.5)")
 
 
 if __name__ == "__main__":
