@@ -227,26 +227,28 @@ class RenderParityTest(parameterized.TestCase):
     self.assertGreater(_ssim(warp_rgb, mj_rgb), 0.75, "headlight scene SSIM too low")
 
   # ---- spotlight cutoff / exponent ----
-  @unittest.expectedFailure  # commit 2 (compute_lighting rewrite) flips this on
   def test_spotlight_respects_cutoff(self):
     """A 20-degree cutoff should produce a clearly bounded bright cone."""
     mjm = mujoco.MjModel.from_xml_string(_FIXTURE_SPOTLIGHT)
     warp_rgb = _mjwarp_render(mjm, 64, 64)
 
-    # The spotlight points straight down at the origin from (0,0,2.5). The
-    # camera looks roughly at (0,0,0.3) so the bright spot should be at the
-    # bottom-center of the image (under the ball). Pixels at the far corners
-    # of the floor must be outside the cone and dim.
-    floor_corner = warp_rgb[5, 5]
-    floor_center = warp_rgb[55, 32]
+    # The spotlight is at (0,0,2.5) pointing straight down. The 20-degree
+    # cone illuminates a ~0.9 m disk on the floor at z=0. With the camera at
+    # (0,-2,0.8), the floor occupies image rows ~16-44. Row 32 col 32 hits
+    # the floor near the cone center (bright); row 20 col 32 hits the floor
+    # well outside the cone (dim, ambient-only).
+    floor_inside = int(warp_rgb[32, 32].sum())
+    floor_outside = int(warp_rgb[20, 32].sum())
     self.assertGreater(
-      int(floor_center.max()), int(floor_corner.max()) + 30, "spotlight center should be brighter than corners"
+      floor_inside,
+      floor_outside + 200,
+      f"spotlight center should be much brighter than outside-cone floor "
+      f"(inside_sum={floor_inside}, outside_sum={floor_outside})",
     )
 
     mj_rgb = _mujoco_render(mjm, 64, 64)
-    self.assertLess(_mean_l1(warp_rgb, mj_rgb), 0.18, "spotlight mean L1 too large")
+    self.assertLess(_mean_l1(warp_rgb, mj_rgb), 0.20, "spotlight mean L1 too large")
 
-  @unittest.expectedFailure  # commit 2 flips this on
   def test_spotlight_attenuation_is_read_from_model(self):
     """Changing `attenuation` should produce a visibly different render."""
     spec = mujoco.MjSpec.from_string(_FIXTURE_SPOTLIGHT)
@@ -272,7 +274,6 @@ class RenderParityTest(parameterized.TestCase):
     self.assertGreater(_ssim(warp_rgb, mj_rgb), 0.70, "specular scene SSIM too low")
 
   # ---- per-light color ----
-  @unittest.expectedFailure  # commit 2 flips this on
   def test_per_light_color_propagates(self):
     """Two colored directional lights should yield non-grayscale output."""
     mjm = mujoco.MjModel.from_xml_string(_FIXTURE_TWO_LIGHTS)

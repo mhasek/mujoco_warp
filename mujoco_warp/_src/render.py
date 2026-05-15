@@ -520,35 +520,47 @@ def compute_lighting(
   lightcastshadow: bool,
   lightpos: wp.vec3,
   lightdir: wp.vec3,
+  lightatten: wp.vec3,
+  lightcutoff_rad: float,
+  lightexp: float,
+  lightdiff: wp.vec3,
   normal: wp.vec3,
   hitpoint: wp.vec3,
   cull_backfaces: bool,
-) -> float:
-  light_contribution = float(0.0)
+) -> wp.vec3:
+  # Diffuse-only Phong lighting matching the MuJoCo OpenGL pipeline:
+  #   atten = 1 / (a0 + a1 * d + a2 * d²) for non-directional lights;
+  #   spot lights additionally attenuate by cos(θ)^exponent inside the cone.
+  # The specular term is added in a subsequent change.
+  result = wp.vec3(0.0, 0.0, 0.0)
 
   # TODO: We should probably only be looping over active lights
   # in the first place with a static loop of enabled light idx?
   if not lightactive:
-    return light_contribution
+    return result
 
   L = wp.vec3(0.0, 0.0, 0.0)
   dist_to_light = float(MJ_MAXVAL)
-  attenuation = float(1.0)
+  atten = float(1.0)
 
   if lighttype == 1:  # directional light
     L = wp.normalize(-lightdir)
+    # Directional lights ignore distance attenuation in MuJoCo OpenGL.
   else:
     L, dist_to_light = math.normalize_with_norm(lightpos - hitpoint)
-    attenuation = 1.0 / (1.0 + 0.02 * dist_to_light * dist_to_light)
+    denom = lightatten[0] + lightatten[1] * dist_to_light + lightatten[2] * dist_to_light * dist_to_light
+    atten = 1.0 / wp.max(denom, 1.0e-6)
     if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
       cos_theta = wp.dot(-L, spot_dir)
-      spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) / (0.95 - 0.85)))
-      attenuation = attenuation * spot_factor
+      cos_cutoff = wp.cos(lightcutoff_rad)
+      if cos_theta < cos_cutoff:
+        return result
+      atten = atten * wp.pow(wp.max(cos_theta, 0.0), lightexp)
 
   ndotl = wp.max(0.0, wp.dot(normal, L))
   if ndotl == 0.0:
-    return light_contribution
+    return result
 
   visible = float(1.0)
 
@@ -593,7 +605,7 @@ def compute_lighting(
     if shadow_hit:
       visible = 0.3
 
-  return ndotl * attenuation * visible
+  return lightdiff * (ndotl * atten * visible)
 
 
 @event_scope
@@ -626,6 +638,10 @@ def render(m: Model, d: Data, rc: RenderContext):
     light_type: wp.array2d[int],
     light_castshadow: wp.array2d[bool],
     light_active: wp.array2d[bool],
+    light_attenuation: wp.array[wp.vec3],
+    light_cutoff: wp.array[float],
+    light_exponent: wp.array[float],
+    light_diffuse: wp.array[wp.vec3],
     flex_vertadr: wp.array[int],
     flex_edge: wp.array[wp.vec2i],
     flex_radius: wp.array[float],
@@ -827,6 +843,8 @@ def render(m: Model, d: Data, rc: RenderContext):
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
+      # MuJoCo stores cutoff in degrees; the kernel needs radians.
+      cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
       light_contribution = compute_lighting(
         geom_type,
         geom_dataid,
@@ -855,11 +873,15 @@ def render(m: Model, d: Data, rc: RenderContext):
         light_castshadow[worldid % light_castshadow.shape[0], l],
         light_xpos_in[worldid, l],
         light_xdir_in[worldid, l],
+        light_attenuation[l],
+        cutoff_rad,
+        light_exponent[l],
+        light_diffuse[l],
         normal,
         hit_point,
         wp.static(rc.enable_backface_culling),
       )
-      result = result + base_color * light_contribution
+      result = result + wp.cw_mul(base_color, light_contribution)
 
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
@@ -887,6 +909,10 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.light_type,
       m.light_castshadow,
       m.light_active,
+      m.light_attenuation,
+      m.light_cutoff,
+      m.light_exponent,
+      m.light_diffuse,
       m.flex_vertadr,
       m.flex_edge,
       m.flex_radius,
