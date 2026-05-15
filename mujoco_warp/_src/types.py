@@ -2028,6 +2028,11 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    headlight_active: whether to inject MuJoCo's vis.headlight as a synthetic
+      directional light at the active camera. Mirrors `mjm.vis.headlight.active`.
+    headlight_ambient: RGB ambient color of the headlight (from vis.headlight).
+    headlight_diffuse: RGB diffuse color of the headlight.
+    headlight_specular: RGB specular color of the headlight.
     enable_backface_culling: drop primitive ray hits whose normal faces away
       from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
@@ -2046,6 +2051,10 @@ class RenderContext:
   render_skybox: bool
   skybox_tex_id: int
   skybox_face_width: int
+  headlight_active: bool
+  headlight_ambient: wp.vec3
+  headlight_diffuse: wp.vec3
+  headlight_specular: wp.vec3
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict

@@ -916,6 +916,59 @@ def render(m: Model, d: Data, rc: RenderContext):
       )
       result = result + wp.cw_mul(base_color, light_contribution)
 
+    # MuJoCo OpenGL injects `vis.headlight` as a non-shadow-casting directional
+    # light at the active camera whenever headlight.active != 0 (the default).
+    # We emit the same as one extra `compute_lighting` call to avoid mutating
+    # the physics model's `nlight`. The headlight uses identity attenuation
+    # (directional lights ignore it) and a zero cone (only the directional
+    # branch in compute_lighting is taken).
+    if wp.static(rc.headlight_active):
+      cam_pos = cam_xpos_in[worldid, mujoco_cam_id]
+      cam_mat = cam_xmat_in[worldid, mujoco_cam_id]
+      # Camera's gaze is along its local -Z; transform to world.
+      cam_fwd = wp.vec3(-cam_mat[0, 2], -cam_mat[1, 2], -cam_mat[2, 2])
+      hl_contrib = compute_lighting(
+        geom_type,
+        geom_dataid,
+        geom_size,
+        flex_vertadr,
+        flex_edge,
+        flex_radius,
+        geom_xpos_in,
+        geom_xmat_in,
+        flexvert_xpos_in,
+        use_shadows,
+        bvh_id,
+        group_root[worldid],
+        bvh_ngeom,
+        bvh_nflexgeom,
+        enabled_geom_ids,
+        worldid,
+        mesh_bvh_id,
+        hfield_bvh_id,
+        flex_geom_flexid,
+        flex_geom_edgeid,
+        flex_bvh_id,
+        flex_group_root,
+        True,
+        1,
+        False,
+        cam_pos,
+        cam_fwd,
+        wp.vec3(1.0, 0.0, 0.0),
+        0.0,
+        0.0,
+        wp.static(rc.headlight_diffuse),
+        wp.static(rc.headlight_specular),
+        normal,
+        hit_point,
+        view_dir,
+        mat_spec,
+        mat_shin_exp,
+        wp.static(rc.enable_backface_culling),
+      )
+      result = result + wp.cw_mul(base_color, hl_contrib)
+
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 

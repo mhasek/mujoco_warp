@@ -2986,6 +2986,10 @@ def create_render_context(
 
   bvh_ngeom = len(geom_enabled_idx)
 
+  hl_ambient = np.asarray(mjm.vis.headlight.ambient, dtype=np.float32)
+  hl_diffuse = np.asarray(mjm.vis.headlight.diffuse, dtype=np.float32)
+  hl_specular = np.asarray(mjm.vis.headlight.specular, dtype=np.float32)
+
   rc = types.RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
@@ -2998,6 +3002,10 @@ def create_render_context(
     render_skybox=render_skybox,
     skybox_tex_id=skybox_tex_id,
     skybox_face_width=skybox_face_width,
+    headlight_active=bool(mjm.vis.headlight.active),
+    headlight_ambient=wp.vec3(float(hl_ambient[0]), float(hl_ambient[1]), float(hl_ambient[2])),
+    headlight_diffuse=wp.vec3(float(hl_diffuse[0]), float(hl_diffuse[1]), float(hl_diffuse[2])),
+    headlight_specular=wp.vec3(float(hl_specular[0]), float(hl_specular[1]), float(hl_specular[2])),
     bvh_ngeom=bvh_ngeom,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_registry=mesh_registry,

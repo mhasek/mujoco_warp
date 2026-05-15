@@ -214,7 +214,6 @@ class RenderParityTest(parameterized.TestCase):
   """
 
   # ---- headlight ----
-  @unittest.expectedFailure  # commit 4 (headlight injection) flips this on
   def test_headlight_only_lights_the_scene(self):
     mjm = mujoco.MjModel.from_xml_string(_FIXTURE_HEADLIGHT_ONLY)
     self.assertEqual(mjm.nlight, 0, "fixture must have no explicit lights")
