@@ -64,7 +64,7 @@ def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
 
 
 @wp.func
-def compute_ray(
+def compute_ray_subpixel(
   # In:
   projection: int,
   fovy: float,
@@ -75,11 +75,12 @@ def compute_ray(
   px: int,
   py: int,
   znear: float,
+  subpixel: wp.vec2,
 ) -> wp.vec3:
-  """Compute ray direction for a pixel with per-world camera parameters.
+  """Compute ray direction for a pixel with a sub-pixel offset in [0, 1].
 
-  This combines _camera_frustum_bounds and build_primary_rays logic for use
-  inside a kernel when camera parameters are batched/randomized across worlds.
+  `subpixel = (0.5, 0.5)` reproduces the pixel-center ray; other values
+  enable jittered supersampling for MSAA.
   """
   if projection == ProjectionType.ORTHOGRAPHIC:
     return wp.vec3(0.0, 0.0, -1.0)
@@ -117,12 +118,40 @@ def compute_ray(
     top = half_height
     bottom = -half_height
 
-  u = (float(px) + 0.5) / float(img_w)
-  v = (float(py) + 0.5) / float(img_h)
+  u = (float(px) + subpixel[0]) / float(img_w)
+  v = (float(py) + subpixel[1]) / float(img_h)
   x = left + (right - left) * u
   y = top + (bottom - top) * v
 
   return wp.normalize(wp.vec3(x, y, -znear))
+
+
+@wp.func
+def compute_ray(
+  # In:
+  projection: int,
+  fovy: float,
+  sensorsize: wp.vec2,
+  intrinsic: wp.vec4,
+  img_w: int,
+  img_h: int,
+  px: int,
+  py: int,
+  znear: float,
+) -> wp.vec3:
+  """Pixel-center ray, equivalent to compute_ray_subpixel with (0.5, 0.5)."""
+  return compute_ray_subpixel(
+    projection,
+    fovy,
+    sensorsize,
+    intrinsic,
+    img_w,
+    img_h,
+    px,
+    py,
+    znear,
+    wp.vec2(0.5, 0.5),
+  )
 
 
 @wp.func

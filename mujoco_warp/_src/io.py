@@ -2762,6 +2762,27 @@ def _build_rays(
   )
 
 
+def _halton_subpixel_offsets(n: int) -> np.ndarray:
+  """Generate N sub-pixel sample offsets in [0, 1]^2 via the Halton(2, 3) sequence.
+
+  Returns an `(N, 2)` float32 array. n==1 returns the pixel center `(0.5, 0.5)`
+  to match the old non-MSAA behavior exactly.
+  """
+  if n == 1:
+    return np.array([[0.5, 0.5]], dtype=np.float32)
+
+  def _halton(i: int, b: int) -> float:
+    f, r = 1.0, 0.0
+    while i > 0:
+      f /= b
+      r += f * (i % b)
+      i //= b
+    return r
+
+  pts = np.array([[_halton(i + 1, 2), _halton(i + 1, 3)] for i in range(n)], dtype=np.float32)
+  return pts
+
+
 def create_render_context(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -2778,6 +2799,7 @@ def create_render_context(
   use_precomputed_rays: bool = True,
   render_skybox: bool = False,
   enable_backface_culling: bool = True,
+  samples_per_pixel: int = 1,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -2806,10 +2828,21 @@ def create_render_context(
                              the ray (ray origin inside the geom). Matches MuJoCo's
                              mesh-ray rule. Default True. Disable for a small
                              performance gain when no camera is ever inside a geom.
+    samples_per_pixel: Number of sub-pixel samples for supersampling anti-aliasing.
+                       1 (default) shoots one ray through the pixel center, matching
+                       the old behavior. Values > 1 fire that many jittered rays per
+                       pixel using a Halton(2, 3) low-discrepancy pattern and average
+                       the RGB results, producing smooth silhouettes at the cost of a
+                       proportional increase in shading work. Depth and segmentation
+                       still use the pixel-center sample. Recommended values: 2, 4,
+                       8, 16.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
+  if samples_per_pixel < 1:
+    raise ValueError(f"samples_per_pixel must be >= 1, got {samples_per_pixel}")
+  subpixel_offsets = _halton_subpixel_offsets(samples_per_pixel)
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
@@ -3002,6 +3035,7 @@ def create_render_context(
     # after calling `create_render_context`, or enable `render_skybox=True`
     # when the model has a skybox texture.
     background_color=render_util.pack_rgba_to_uint32(0.0, 0.0, 0.0, 255.0),
+    background_rgb=wp.vec3(0.0, 0.0, 0.0),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,
     skybox_tex_id=skybox_tex_id,
@@ -3051,6 +3085,8 @@ def create_render_context(
     znear=znear,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
+    samples_per_pixel=int(samples_per_pixel),
+    subpixel_offsets=wp.array(subpixel_offsets, dtype=wp.vec2),
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)

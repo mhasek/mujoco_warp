@@ -2038,6 +2038,11 @@ class RenderContext:
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
       is faster but causes a camera placed inside a geom to render that geom's
       back wall.
+    samples_per_pixel: number of jittered sub-pixel rays per pixel for MSAA.
+      1 = no AA, > 1 = average of N rays with Halton(2, 3) offsets.
+    subpixel_offsets: precomputed sub-pixel sample positions, shape (N, 2) in
+      [0, 1]^2. With N == 1 the single offset is (0.5, 0.5) and the kernel
+      degenerates to the original pixel-center behavior.
   """
 
   nrender: int
@@ -2047,6 +2052,7 @@ class RenderContext:
   use_shadows: bool
   use_ambient_lighting: bool
   background_color: wp.uint32
+  background_rgb: wp.vec3
   use_precomputed_rays: bool
   render_skybox: bool
   skybox_tex_id: int
@@ -2096,3 +2102,5 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  samples_per_pixel: int
+  subpixel_offsets: array("*", wp.vec2)

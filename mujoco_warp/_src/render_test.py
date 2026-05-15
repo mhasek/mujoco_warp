@@ -361,6 +361,48 @@ class RenderTest(parameterized.TestCase):
       "with cull disabled, enclosing geom should appear in segmentation",
     )
 
+  def test_msaa_smooths_silhouette(self):
+    """samples_per_pixel > 1 should anti-alias geom silhouettes."""
+    xml = """
+    <mujoco>
+      <visual>
+        <headlight active="1" ambient="0.3 0.3 0.3" diffuse="0.8 0.8 0.8" specular="0.5 0.5 0.5"/>
+        <map znear="0.01"/>
+      </visual>
+      <worldbody>
+        <camera name="cam" pos="0 -2 0.5" xyaxes="1 0 0 0 0.3 1" resolution="32 32"/>
+        <geom type="box" pos="0 0 0.3" size="0.4 0.4 0.4" euler="0 0 30" rgba="0.9 0.2 0.2 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    def partial_edge_count(n_samples: int) -> int:
+      rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, samples_per_pixel=n_samples)
+      mjw.render(m, d, rc)
+      r = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0].reshape(32, 32)
+      # Pixels that are neither pure background (R==0) nor pure box (R>=200).
+      return int(((r > 0) & (r < 200)).sum())
+
+    n1 = partial_edge_count(1)
+    n16 = partial_edge_count(16)
+    self.assertGreater(n16, n1, f"MSAA should produce more anti-aliased edge pixels (n1={n1}, n16={n16})")
+
+  def test_msaa_n1_matches_baseline(self):
+    """samples_per_pixel == 1 must be bit-identical to the default render."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    rc_default = mjw.create_render_context(mjm, nworld=1, cam_res=(32, 32), render_rgb=True)
+    rc_n1 = mjw.create_render_context(mjm, nworld=1, cam_res=(32, 32), render_rgb=True, samples_per_pixel=1)
+
+    mjw.render(m, d, rc_default)
+    mjw.render(m, d, rc_n1)
+    np.testing.assert_array_equal(rc_default.rgb_data.numpy(), rc_n1.rgb_data.numpy())
+
+  def test_msaa_rejects_zero(self):
+    mjm, _, _, _ = test_data.fixture("primitives.xml")
+    with self.assertRaises(ValueError):
+      mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, samples_per_pixel=0)
+
 
 if __name__ == "__main__":
   wp.init()

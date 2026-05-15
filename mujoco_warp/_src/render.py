@@ -28,7 +28,7 @@ from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
-from mujoco_warp._src.render_util import compute_ray
+from mujoco_warp._src.render_util import compute_ray_subpixel
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
@@ -705,6 +705,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     flex_geom_flexid: wp.array[int],
     flex_geom_edgeid: wp.array[int],
     textures: wp.array[wp.Texture2D],
+    subpixel_offsets: wp.array[wp.vec2],
     # Out:
     rgb_out: wp.array2d[wp.uint32],
     depth_out: wp.array2d[float],
@@ -732,264 +733,262 @@ def render(m: Model, d: Data, rc: RenderContext):
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
 
-    if wp.static(rc.use_precomputed_rays):
-      ray_dir_local_cam = ray[rayid]
-    else:
-      img_w = cam_res[cam_idx][0]
-      img_h = cam_res[cam_idx][1]
-      px = rayid_local % img_w
-      py = rayid_local // img_w
-      ray_dir_local_cam = compute_ray(
-        cam_projection[mujoco_cam_id],
-        cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id],
-        cam_sensorsize[mujoco_cam_id],
-        cam_intrinsic[worldid % cam_intrinsic.shape[0], mujoco_cam_id],
-        img_w,
-        img_h,
-        px,
-        py,
-        wp.static(rc.znear),
+    img_w = cam_res[cam_idx][0]
+    img_h = cam_res[cam_idx][1]
+    px = rayid_local % img_w
+    py = rayid_local // img_w
+    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
+    cam_mat_world = cam_xmat_in[worldid, mujoco_cam_id]
+
+    # Camera intrinsics (used only when not using precomputed rays).
+    cam_proj = cam_projection[mujoco_cam_id]
+    cam_fov = cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id]
+    cam_sz = cam_sensorsize[mujoco_cam_id]
+    cam_intr = cam_intrinsic[worldid % cam_intrinsic.shape[0], mujoco_cam_id]
+
+    # MSAA: accumulate RGB across `samples_per_pixel` sub-pixel rays. The first
+    # sample (index 0) is also used for depth and segmentation, which are not
+    # averaged. When samples_per_pixel == 1 the loop reduces to the original
+    # single-ray behavior with subpixel_offsets[0] == (0.5, 0.5).
+    rgb_accum = wp.vec3(0.0, 0.0, 0.0)
+    seg_geom_id = int(-1)
+    seg_mesh_id = int(-1)
+
+    for s in range(wp.static(rc.samples_per_pixel)):
+      if wp.static(rc.use_precomputed_rays) and s == 0:
+        ray_dir_local_cam = ray[rayid]
+      else:
+        ray_dir_local_cam = compute_ray_subpixel(
+          cam_proj, cam_fov, cam_sz, cam_intr, img_w, img_h, px, py, wp.static(rc.znear), subpixel_offsets[s]
+        )
+      ray_dir_world = cam_mat_world @ ray_dir_local_cam
+
+      geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
+        geom_type,
+        geom_dataid,
+        geom_size,
+        flex_vertadr,
+        flex_edge,
+        flex_radius,
+        geom_xpos_in,
+        geom_xmat_in,
+        flexvert_xpos_in,
+        bvh_id,
+        group_root[worldid],
+        worldid,
+        bvh_ngeom,
+        bvh_nflexgeom,
+        enabled_geom_ids,
+        mesh_bvh_id,
+        hfield_bvh_id,
+        flex_geom_flexid,
+        flex_geom_edgeid,
+        flex_bvh_id,
+        flex_group_root,
+        ray_origin_world,
+        ray_dir_world,
+        wp.static(rc.enable_backface_culling),
       )
 
-    ray_dir_world = cam_xmat_in[worldid, mujoco_cam_id] @ ray_dir_local_cam
-    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
+      # Sample 0 drives depth and segmentation; later samples only affect RGB.
+      if s == 0:
+        seg_geom_id = geom_id
+        seg_mesh_id = mesh_id
+        if render_depth[cam_idx]:
+          if geom_id != -1:
+            # Planar depth: project Euclidean distance onto the camera's optical axis.
+            depth_out[worldid, depth_adr[cam_idx] + rayid_local] = dist * (-ray_dir_local_cam[2])
 
-    geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      flex_vertadr,
-      flex_edge,
-      flex_radius,
-      geom_xpos_in,
-      geom_xmat_in,
-      flexvert_xpos_in,
-      bvh_id,
-      group_root[worldid],
-      worldid,
-      bvh_ngeom,
-      bvh_nflexgeom,
-      enabled_geom_ids,
-      mesh_bvh_id,
-      hfield_bvh_id,
-      flex_geom_flexid,
-      flex_geom_edgeid,
-      flex_bvh_id,
-      flex_group_root,
-      ray_origin_world,
-      ray_dir_world,
-      wp.static(rc.enable_backface_culling),
-    )
+      if not render_rgb[cam_idx]:
+        # Depth/seg only; no need to shade later samples.
+        if wp.static(rc.samples_per_pixel == 1):
+          break
+        else:
+          continue
 
-    if render_seg[cam_idx] and geom_id != -1:
+      # Background contribution: skybox (if enabled) or solid background_rgb.
+      if geom_id == -1:
+        if wp.static(rc.render_skybox):
+          rgb_accum = rgb_accum + sample_skybox(
+            textures[wp.static(rc.skybox_tex_id)],
+            wp.static(1.0 / float(rc.skybox_face_width)),
+            ray_dir_world,
+          )
+        else:
+          rgb_accum = rgb_accum + wp.static(rc.background_rgb)
+        continue
+
+      # Hit: shade the sample.
+      hit_point = ray_origin_world + ray_dir_world * dist
+
       if geom_id == -2:
-        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
+        color = flex_rgba[mesh_id]
+      elif geom_matid[worldid % geom_matid.shape[0], geom_id] == -1:
+        color = geom_rgba[worldid % geom_rgba.shape[0], geom_id]
       else:
-        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(geom_id, int(ObjType.GEOM))
+        color = mat_rgba[worldid % mat_rgba.shape[0], geom_matid[worldid % geom_matid.shape[0], geom_id]]
 
-    # Early Out
-    if geom_id == -1:
-      if wp.static(rc.render_skybox) and render_rgb[cam_idx]:
-        skybox_color = sample_skybox(
-          textures[wp.static(rc.skybox_tex_id)],
-          wp.static(1.0 / float(rc.skybox_face_width)),
-          ray_dir_world,
-        )
-        rgb_out[worldid, rgb_adr[cam_idx] + rayid_local] = pack_rgba_to_uint32(
-          skybox_color[0] * 255.0,
-          skybox_color[1] * 255.0,
-          skybox_color[2] * 255.0,
-          255.0,
-        )
-      return
+      base_color = wp.vec3(color[0], color[1], color[2])
 
-    if render_depth[cam_idx]:
-      # Planar depth: project Euclidean distance onto the camera's optical axis.
-      # In camera-local coordinates, the optical axis is -Z. The Z-component of the
-      # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
-      # between the ray and the optical axis.
-      depth_out[worldid, depth_adr[cam_idx] + rayid_local] = dist * (-ray_dir_local_cam[2])
+      if wp.static(rc.use_textures):
+        if geom_id != -2:
+          mat_id = geom_matid[worldid % geom_matid.shape[0], geom_id]
+          if mat_id >= 0:
+            tex_id = mat_texid[worldid % mat_texid.shape[0], mat_id, 1]
+            if tex_id >= 0:
+              tex_color = sample_texture(
+                geom_type,
+                mesh_faceadr,
+                geom_id,
+                mat_texrepeat[worldid % mat_texrepeat.shape[0], mat_id],
+                textures[tex_id],
+                geom_xpos_in[worldid, geom_id],
+                geom_xmat_in[worldid, geom_id],
+                mesh_facetexcoord,
+                mesh_texcoord,
+                mesh_texcoord_offsets,
+                hit_point,
+                u,
+                v,
+                f,
+                mesh_id,
+              )
+              base_color = wp.cw_mul(base_color, tex_color)
+
+      # Look up material specular/shininess/emission. Flex hits have no material.
+      mat_spec = float(0.5)
+      mat_shin_exp = float(0.5 * 128.0)
+      mat_emis = float(0.0)
+      if geom_id != -2:
+        mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
+        if mat_id_for_spec >= 0:
+          mat_spec = mat_specular[mat_id_for_spec]
+          mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
+          mat_emis = mat_emission[mat_id_for_spec]
+
+      sample_rgb = base_color * mat_emis
+
+      if wp.static(rc.use_ambient_lighting):
+        if wp.static(rc.headlight_active):
+          sample_rgb = sample_rgb + wp.cw_mul(base_color, wp.static(rc.headlight_ambient))
+        elif wp.static(m.nlight == 0):
+          sample_rgb = sample_rgb + base_color * 0.3
+        for la in range(wp.static(m.nlight)):
+          if light_active[worldid % light_active.shape[0], la]:
+            sample_rgb = sample_rgb + wp.cw_mul(base_color, light_ambient[la])
+
+      view_dir = wp.normalize(-ray_dir_world)
+
+      for l in range(wp.static(m.nlight)):
+        cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
+        light_contribution = compute_lighting(
+          geom_type,
+          geom_dataid,
+          geom_size,
+          flex_vertadr,
+          flex_edge,
+          flex_radius,
+          geom_xpos_in,
+          geom_xmat_in,
+          flexvert_xpos_in,
+          use_shadows,
+          bvh_id,
+          group_root[worldid],
+          bvh_ngeom,
+          bvh_nflexgeom,
+          enabled_geom_ids,
+          worldid,
+          mesh_bvh_id,
+          hfield_bvh_id,
+          flex_geom_flexid,
+          flex_geom_edgeid,
+          flex_bvh_id,
+          flex_group_root,
+          light_active[worldid % light_active.shape[0], l],
+          light_type[worldid % light_type.shape[0], l],
+          light_castshadow[worldid % light_castshadow.shape[0], l],
+          light_xpos_in[worldid, l],
+          light_xdir_in[worldid, l],
+          light_attenuation[l],
+          cutoff_rad,
+          light_exponent[l],
+          light_diffuse[l],
+          light_specular[l],
+          normal,
+          hit_point,
+          view_dir,
+          mat_spec,
+          mat_shin_exp,
+          wp.static(rc.enable_backface_culling),
+        )
+        sample_rgb = sample_rgb + wp.cw_mul(base_color, light_contribution)
+
+      if wp.static(rc.headlight_active):
+        cam_pos = ray_origin_world
+        cam_fwd = wp.vec3(-cam_mat_world[0, 2], -cam_mat_world[1, 2], -cam_mat_world[2, 2])
+        hl_contrib = compute_lighting(
+          geom_type,
+          geom_dataid,
+          geom_size,
+          flex_vertadr,
+          flex_edge,
+          flex_radius,
+          geom_xpos_in,
+          geom_xmat_in,
+          flexvert_xpos_in,
+          use_shadows,
+          bvh_id,
+          group_root[worldid],
+          bvh_ngeom,
+          bvh_nflexgeom,
+          enabled_geom_ids,
+          worldid,
+          mesh_bvh_id,
+          hfield_bvh_id,
+          flex_geom_flexid,
+          flex_geom_edgeid,
+          flex_bvh_id,
+          flex_group_root,
+          True,
+          1,
+          False,
+          cam_pos,
+          cam_fwd,
+          wp.vec3(1.0, 0.0, 0.0),
+          0.0,
+          0.0,
+          wp.static(rc.headlight_diffuse),
+          wp.static(rc.headlight_specular),
+          normal,
+          hit_point,
+          view_dir,
+          mat_spec,
+          mat_shin_exp,
+          wp.static(rc.enable_backface_culling),
+        )
+        sample_rgb = sample_rgb + wp.cw_mul(base_color, hl_contrib)
+
+      rgb_accum = rgb_accum + sample_rgb
+
+    # Segmentation from sample 0.
+    if render_seg[cam_idx] and seg_geom_id != -1:
+      if seg_geom_id == -2:
+        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(seg_mesh_id, int(ObjType.FLEX))
+      else:
+        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(seg_geom_id, int(ObjType.GEOM))
 
     if not render_rgb[cam_idx]:
       return
 
-    # Shade the pixel
-    hit_point = ray_origin_world + ray_dir_world * dist
-
-    if geom_id == -2:
-      # We encode flex_id in mesh_id for flex ray hits during cast_ray
-      color = flex_rgba[mesh_id]
-    elif geom_matid[worldid % geom_matid.shape[0], geom_id] == -1:
-      color = geom_rgba[worldid % geom_rgba.shape[0], geom_id]
-    else:
-      color = mat_rgba[worldid % mat_rgba.shape[0], geom_matid[worldid % geom_matid.shape[0], geom_id]]
-
-    base_color = wp.vec3(color[0], color[1], color[2])
-    hit_color = base_color
-
-    if wp.static(rc.use_textures):
-      if geom_id != -2:
-        mat_id = geom_matid[worldid % geom_matid.shape[0], geom_id]
-        if mat_id >= 0:
-          tex_id = mat_texid[worldid % mat_texid.shape[0], mat_id, 1]
-          if tex_id >= 0:
-            tex_color = sample_texture(
-              geom_type,
-              mesh_faceadr,
-              geom_id,
-              mat_texrepeat[worldid % mat_texrepeat.shape[0], mat_id],
-              textures[tex_id],
-              geom_xpos_in[worldid, geom_id],
-              geom_xmat_in[worldid, geom_id],
-              mesh_facetexcoord,
-              mesh_texcoord,
-              mesh_texcoord_offsets,
-              hit_point,
-              u,
-              v,
-              f,
-              mesh_id,
-            )
-            base_color = wp.cw_mul(base_color, tex_color)
-
-    # Look up material specular/shininess/emission (defaults match MuJoCo when
-    # no material is bound to the geom). Flex hits never have a material.
-    mat_spec = float(0.5)
-    mat_shin_exp = float(0.5 * 128.0)
-    mat_emis = float(0.0)
-    if geom_id != -2:
-      mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
-      if mat_id_for_spec >= 0:
-        mat_spec = mat_specular[mat_id_for_spec]
-        # MuJoCo stores shininess in [0, 1]; OpenGL uses the [0, 128] exponent.
-        mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
-        mat_emis = mat_emission[mat_id_for_spec]
-
-    # Start with the emission term (self-illumination from the material).
-    result = base_color * mat_emis
-
-    if wp.static(rc.use_ambient_lighting):
-      # MuJoCo OpenGL applies a 0.3 global ambient floor only when there is
-      # no light source at all (no headlight and no user lights). When the
-      # headlight is active, it contributes its ambient color. Per-user-light
-      # ambient is additive and applied regardless of N·L or shadow.
-      if wp.static(rc.headlight_active):
-        result = result + wp.cw_mul(base_color, wp.static(rc.headlight_ambient))
-      elif wp.static(m.nlight == 0):
-        result = result + base_color * 0.3
-      for la in range(wp.static(m.nlight)):
-        if light_active[worldid % light_active.shape[0], la]:
-          result = result + wp.cw_mul(base_color, light_ambient[la])
-
-    # View direction: from the hit point back toward the camera.
-    view_dir = wp.normalize(-ray_dir_world)
-
-    # Apply lighting and shadows
-    for l in range(wp.static(m.nlight)):
-      # MuJoCo stores cutoff in degrees; the kernel needs radians.
-      cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
-      light_contribution = compute_lighting(
-        geom_type,
-        geom_dataid,
-        geom_size,
-        flex_vertadr,
-        flex_edge,
-        flex_radius,
-        geom_xpos_in,
-        geom_xmat_in,
-        flexvert_xpos_in,
-        use_shadows,
-        bvh_id,
-        group_root[worldid],
-        bvh_ngeom,
-        bvh_nflexgeom,
-        enabled_geom_ids,
-        worldid,
-        mesh_bvh_id,
-        hfield_bvh_id,
-        flex_geom_flexid,
-        flex_geom_edgeid,
-        flex_bvh_id,
-        flex_group_root,
-        light_active[worldid % light_active.shape[0], l],
-        light_type[worldid % light_type.shape[0], l],
-        light_castshadow[worldid % light_castshadow.shape[0], l],
-        light_xpos_in[worldid, l],
-        light_xdir_in[worldid, l],
-        light_attenuation[l],
-        cutoff_rad,
-        light_exponent[l],
-        light_diffuse[l],
-        light_specular[l],
-        normal,
-        hit_point,
-        view_dir,
-        mat_spec,
-        mat_shin_exp,
-        wp.static(rc.enable_backface_culling),
-      )
-      result = result + wp.cw_mul(base_color, light_contribution)
-
-    # MuJoCo OpenGL injects `vis.headlight` as a non-shadow-casting directional
-    # light at the active camera whenever headlight.active != 0 (the default).
-    # We emit the same as one extra `compute_lighting` call to avoid mutating
-    # the physics model's `nlight`. The headlight uses identity attenuation
-    # (directional lights ignore it) and a zero cone (only the directional
-    # branch in compute_lighting is taken).
-    if wp.static(rc.headlight_active):
-      cam_pos = cam_xpos_in[worldid, mujoco_cam_id]
-      cam_mat = cam_xmat_in[worldid, mujoco_cam_id]
-      # Camera's gaze is along its local -Z; transform to world.
-      cam_fwd = wp.vec3(-cam_mat[0, 2], -cam_mat[1, 2], -cam_mat[2, 2])
-      hl_contrib = compute_lighting(
-        geom_type,
-        geom_dataid,
-        geom_size,
-        flex_vertadr,
-        flex_edge,
-        flex_radius,
-        geom_xpos_in,
-        geom_xmat_in,
-        flexvert_xpos_in,
-        use_shadows,
-        bvh_id,
-        group_root[worldid],
-        bvh_ngeom,
-        bvh_nflexgeom,
-        enabled_geom_ids,
-        worldid,
-        mesh_bvh_id,
-        hfield_bvh_id,
-        flex_geom_flexid,
-        flex_geom_edgeid,
-        flex_bvh_id,
-        flex_group_root,
-        True,
-        1,
-        False,
-        cam_pos,
-        cam_fwd,
-        wp.vec3(1.0, 0.0, 0.0),
-        0.0,
-        0.0,
-        wp.static(rc.headlight_diffuse),
-        wp.static(rc.headlight_specular),
-        normal,
-        hit_point,
-        view_dir,
-        mat_spec,
-        mat_shin_exp,
-        wp.static(rc.enable_backface_culling),
-      )
-      result = result + wp.cw_mul(base_color, hl_contrib)
-
-    hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
-    hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
+    # Average over samples and pack to uint32.
+    rgb_avg = rgb_accum * wp.static(1.0 / float(rc.samples_per_pixel))
+    rgb_clamped = wp.min(rgb_avg, wp.vec3(1.0, 1.0, 1.0))
+    rgb_clamped = wp.max(rgb_clamped, wp.vec3(0.0, 0.0, 0.0))
 
     rgb_out[worldid, rgb_adr[cam_idx] + rayid_local] = pack_rgba_to_uint32(
-      hit_color[0] * 255.0,
-      hit_color[1] * 255.0,
-      hit_color[2] * 255.0,
+      rgb_clamped[0] * 255.0,
+      rgb_clamped[1] * 255.0,
+      rgb_clamped[2] * 255.0,
       255.0,
     )
 
@@ -1059,6 +1058,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.flex_geom_flexid,
       rc.flex_geom_edgeid,
       rc.textures,
+      rc.subpixel_offsets,
     ],
     outputs=[
       rc.rgb_data,
