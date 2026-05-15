@@ -334,11 +334,11 @@ class RenderParityTest(parameterized.TestCase):
   # pushes scores below these, the test fails and the diff is small enough to
   # be obviously something specific (e.g. a sign flip in compute_lighting).
   _PARITY_FIXTURES = (
-    ("headlight_only", _FIXTURE_HEADLIGHT_ONLY, 0.70, 0.10),
-    ("spotlight", _FIXTURE_SPOTLIGHT, 0.60, 0.10),
-    ("specular", _FIXTURE_SPECULAR, 0.75, 0.07),
-    ("two_lights", _FIXTURE_TWO_LIGHTS, 0.75, 0.07),
-    ("emission", _FIXTURE_EMISSION, 0.65, 0.07),
+    ("headlight_only", _FIXTURE_HEADLIGHT_ONLY, 0.92, 0.02),
+    ("spotlight", _FIXTURE_SPOTLIGHT, 0.78, 0.06),
+    ("specular", _FIXTURE_SPECULAR, 0.90, 0.02),
+    ("two_lights", _FIXTURE_TWO_LIGHTS, 0.88, 0.03),
+    ("emission", _FIXTURE_EMISSION, 0.92, 0.02),
   )
 
   @parameterized.named_parameters(*[(n, x, s, l1) for n, x, s, l1 in _PARITY_FIXTURES])

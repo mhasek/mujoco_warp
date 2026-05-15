@@ -2997,7 +2997,11 @@ def create_render_context(
     use_textures=use_textures,
     use_shadows=use_shadows,
     use_ambient_lighting=use_ambient_lighting,
-    background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
+    # Match MuJoCo OpenGL's no-skybox default: missed rays write pure black.
+    # Users that want a different fallback can override `background_color`
+    # after calling `create_render_context`, or enable `render_skybox=True`
+    # when the model has a skybox texture.
+    background_color=render_util.pack_rgba_to_uint32(0.0, 0.0, 0.0, 255.0),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,
     skybox_tex_id=skybox_tex_id,
