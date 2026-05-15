@@ -524,14 +524,19 @@ def compute_lighting(
   lightcutoff_rad: float,
   lightexp: float,
   lightdiff: wp.vec3,
+  lightspec: wp.vec3,
   normal: wp.vec3,
   hitpoint: wp.vec3,
+  view_dir: wp.vec3,
+  mat_spec: float,
+  mat_shin_exp: float,
   cull_backfaces: bool,
 ) -> wp.vec3:
-  # Diffuse-only Phong lighting matching the MuJoCo OpenGL pipeline:
+  # Phong lighting matching the MuJoCo OpenGL pipeline:
   #   atten = 1 / (a0 + a1 * d + a2 * d²) for non-directional lights;
-  #   spot lights additionally attenuate by cos(θ)^exponent inside the cone.
-  # The specular term is added in a subsequent change.
+  #   spot lights additionally attenuate by cos(θ)^exponent inside the cone;
+  #   specular highlight = mat_spec * (max(0, R · V))^mat_shin_exp,
+  #   where R = reflect(-L, N) and V = direction from hit to camera.
   result = wp.vec3(0.0, 0.0, 0.0)
 
   # TODO: We should probably only be looping over active lights
@@ -605,7 +610,14 @@ def compute_lighting(
     if shadow_hit:
       visible = 0.3
 
-  return lightdiff * (ndotl * atten * visible)
+  diffuse_contrib = ndotl * atten * visible
+  spec_contrib = float(0.0)
+  if mat_spec > 0.0 and mat_shin_exp > 0.0:
+    R = 2.0 * ndotl * normal - L
+    rdotv = wp.max(0.0, wp.dot(R, view_dir))
+    spec_contrib = mat_spec * wp.pow(rdotv, mat_shin_exp) * atten * visible
+
+  return lightdiff * diffuse_contrib + lightspec * spec_contrib
 
 
 @event_scope
@@ -642,12 +654,15 @@ def render(m: Model, d: Data, rc: RenderContext):
     light_cutoff: wp.array[float],
     light_exponent: wp.array[float],
     light_diffuse: wp.array[wp.vec3],
+    light_specular: wp.array[wp.vec3],
     flex_vertadr: wp.array[int],
     flex_edge: wp.array[wp.vec2i],
     flex_radius: wp.array[float],
     mesh_faceadr: wp.array[int],
     mat_texid: wp.array3d[int],
     mat_texrepeat: wp.array2d[wp.vec2],
+    mat_specular: wp.array[float],
+    mat_shininess: wp.array[float],
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -841,6 +856,20 @@ def render(m: Model, d: Data, rc: RenderContext):
       ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
       result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
+    # Look up material specular/shininess (defaults match MuJoCo when no
+    # material is bound to the geom). Flex hits never have a material.
+    mat_spec = float(0.5)
+    mat_shin_exp = float(0.5 * 128.0)
+    if geom_id != -2:
+      mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
+      if mat_id_for_spec >= 0:
+        mat_spec = mat_specular[mat_id_for_spec]
+        # MuJoCo stores shininess in [0, 1]; OpenGL uses the [0, 128] exponent.
+        mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
+
+    # View direction: from the hit point back toward the camera.
+    view_dir = wp.normalize(-ray_dir_world)
+
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
       # MuJoCo stores cutoff in degrees; the kernel needs radians.
@@ -877,8 +906,12 @@ def render(m: Model, d: Data, rc: RenderContext):
         cutoff_rad,
         light_exponent[l],
         light_diffuse[l],
+        light_specular[l],
         normal,
         hit_point,
+        view_dir,
+        mat_spec,
+        mat_shin_exp,
         wp.static(rc.enable_backface_culling),
       )
       result = result + wp.cw_mul(base_color, light_contribution)
@@ -913,12 +946,15 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.light_cutoff,
       m.light_exponent,
       m.light_diffuse,
+      m.light_specular,
       m.flex_vertadr,
       m.flex_edge,
       m.flex_radius,
       m.mesh_faceadr,
       m.mat_texid,
       m.mat_texrepeat,
+      m.mat_specular,
+      m.mat_shininess,
       m.mat_rgba,
       d.geom_xpos,
       d.geom_xmat,

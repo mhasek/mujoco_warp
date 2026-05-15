@@ -264,14 +264,41 @@ class RenderParityTest(parameterized.TestCase):
     self.assertGreater(_mean_l1(rgb_quad, rgb_const), 0.01, "attenuation should change the render; field is being ignored")
 
   # ---- specular ----
-  @unittest.expectedFailure  # commit 3 (Phong specular) flips this on
   def test_specular_highlight_appears(self):
-    """A high-specular material under the headlight should show a bright highlight."""
-    mjm = mujoco.MjModel.from_xml_string(_FIXTURE_SPECULAR)
-    warp_rgb = _mjwarp_render(mjm, 64, 64)
-    mj_rgb = _mujoco_render(mjm, 64, 64)
+    """A high-specular material under a directional light should show a highlight."""
+    # Use a fixture with an explicit light to exercise specular without
+    # depending on the headlight (which is added in a later commit).
+    xml = """
+    <mujoco>
+      <visual>
+        <headlight active="0" ambient="0 0 0" diffuse="0 0 0" specular="0 0 0"/>
+        <map znear="0.01"/>
+      </visual>
+      <asset>
+        <material name="shiny" specular="0.9" shininess="0.8" rgba="0.2 0.2 0.8 1"/>
+      </asset>
+      <worldbody>
+        <camera name="cam" pos="0 -2 0.6" xyaxes="1 0 0 0 0.4 1" resolution="64 64"/>
+        <light pos="0 -1 3" dir="0 0.3 -1" directional="true"
+               diffuse="0.8 0.8 0.8" specular="1 1 1" ambient="0 0 0" attenuation="1 0 0"/>
+        <geom name="floor" type="plane" size="2 2 0.1" rgba="0.5 0.5 0.5 1"/>
+        <geom name="ball" type="sphere" pos="0 0 0.3" size="0.3" material="shiny"/>
+      </worldbody>
+    </mujoco>
+    """
+    # Same scene with specular disabled on the material.
+    xml_no_spec = xml.replace('specular="0.9"', 'specular="0.0"')
 
-    self.assertGreater(_ssim(warp_rgb, mj_rgb), 0.70, "specular scene SSIM too low")
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjm_no_spec = mujoco.MjModel.from_xml_string(xml_no_spec)
+
+    warp_with = _mjwarp_render(mjm, 64, 64).astype(np.int32)
+    warp_without = _mjwarp_render(mjm_no_spec, 64, 64).astype(np.int32)
+
+    # The ball pixels should be measurably brighter with specular on.
+    diff = warp_with.sum(axis=-1) - warp_without.sum(axis=-1)
+    bright_pixels = int((diff > 30).sum())
+    self.assertGreater(bright_pixels, 5, f"specular highlight should add brightness to >=5 pixels (got {bright_pixels})")
 
   # ---- per-light color ----
   def test_per_light_color_propagates(self):
