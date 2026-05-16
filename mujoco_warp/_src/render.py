@@ -531,6 +531,7 @@ def compute_lighting(
   mat_spec: float,
   mat_shin_exp: float,
   cull_backfaces: bool,
+  enable_specular: bool,
 ) -> Tuple[wp.vec3, wp.vec3]:
   # Blinn-Phong lighting matching the MuJoCo OpenGL fixed-function pipeline:
   #   atten = 1 / (a0 + a1 * d + a2 * d²) for non-directional lights;
@@ -621,13 +622,14 @@ def compute_lighting(
 
   weight = atten * visible
   diff_rgb = lightdiff * (ndotl * weight)
-  if mat_spec > 0.0 and mat_shin_exp > 0.0:
-    # Blinn-Phong half-vector: matches OpenGL's GL_LIGHT_MODEL_LOCAL_VIEWER=0
-    # fixed-function pipeline. Note that the OpenGL spec also gates the
-    # specular by step(N·L > 0); we already returned early when ndotl == 0.
-    H = wp.normalize(L + view_dir)
-    ndoth = wp.max(0.0, wp.dot(normal, H))
-    spec_rgb = lightspec * (mat_spec * wp.pow(ndoth, mat_shin_exp) * weight)
+  if enable_specular:
+    if mat_spec > 0.0 and mat_shin_exp > 0.0:
+      # Blinn-Phong half-vector: matches OpenGL's GL_LIGHT_MODEL_LOCAL_VIEWER=0
+      # fixed-function pipeline. Note that the OpenGL spec also gates the
+      # specular by step(N·L > 0); we already returned early when ndotl == 0.
+      H = wp.normalize(L + view_dir)
+      ndoth = wp.max(0.0, wp.dot(normal, H))
+      spec_rgb = lightspec * (mat_spec * wp.pow(ndoth, mat_shin_exp) * weight)
 
   return diff_rgb, spec_rgb
 
@@ -898,7 +900,9 @@ def render(m: Model, d: Data, rc: RenderContext):
             if light_active[worldid % light_active.shape[0], la]:
               sample_rgb = sample_rgb + wp.cw_mul(base_color, light_ambient[la])
 
-      view_dir = wp.normalize(-ray_dir_world)
+      view_dir = wp.vec3(0.0, 0.0, 0.0)
+      if wp.static(rc.enable_specular):
+        view_dir = wp.normalize(-ray_dir_world)
 
       for l in range(wp.static(m.nlight)):
         cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
@@ -941,6 +945,7 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_spec,
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
+          wp.static(rc.enable_specular),
         )
         # Diffuse modulated by base color (matches `glColorMaterial(AMBIENT_AND_DIFFUSE)`);
         # specular is left at the light/material's specular color (matches OpenGL's
@@ -989,6 +994,7 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_spec,
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
+          wp.static(rc.enable_specular),
         )
         sample_rgb = sample_rgb + wp.cw_mul(base_color, hl_diff) + hl_spec
 
