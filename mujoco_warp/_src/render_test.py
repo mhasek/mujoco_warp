@@ -403,6 +403,81 @@ class RenderTest(parameterized.TestCase):
     with self.assertRaises(ValueError):
       mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, samples_per_pixel=0)
 
+  # ---- opt-out flags ----
+  # A scene that exercises every feature: headlight on, one user light with
+  # nonzero ambient, a material with specular + emission, default shadows.
+  _FLAGS_XML = """
+  <mujoco>
+    <visual>
+      <headlight active="1" ambient="0.1 0.1 0.1" diffuse="0.8 0.8 0.8" specular="0.5 0.5 0.5"/>
+      <map znear="0.01"/>
+    </visual>
+    <asset>
+      <material name="m" specular="0.7" shininess="0.5" emission="0.3" rgba="0.2 0.4 0.8 1"/>
+    </asset>
+    <worldbody>
+      <camera name="cam" pos="0 -2 0.5" xyaxes="1 0 0 0 0.3 1" resolution="32 32"/>
+      <light pos="0 0 3" dir="0 0 -1" directional="true"
+             diffuse="0.6 0.6 0.6" specular="0.4 0.4 0.4" ambient="0.15 0.15 0.15"
+             attenuation="1 0 0"/>
+      <geom name="floor" type="plane" size="2 2 0.1" rgba="0.6 0.6 0.6 1"/>
+      <geom name="ball" type="sphere" pos="0 0 0.3" size="0.3" material="m"/>
+    </worldbody>
+  </mujoco>
+  """
+
+  def _render_with(self, **kwargs) -> np.ndarray:
+    mjm, _, m, d = test_data.fixture(xml=self._FLAGS_XML)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, **kwargs)
+    mjw.render(m, d, rc)
+    return _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+
+  def test_enable_headlight_off_changes_render(self):
+    """Disabling the headlight must remove its contribution from the image."""
+    on = self._render_with()
+    off = self._render_with(enable_headlight=False)
+    # Headlight is by far the brightest source in this scene; disabling it
+    # must dim the lit ball substantially.
+    self.assertGreater(
+      int(on.max()), int(off.max()) + 30, f"headlight-off max ({int(off.max())}) too close to on ({int(on.max())})"
+    )
+
+  def test_enable_specular_off_removes_highlight(self):
+    """Disabling specular must dim the specular hotspot on the ball."""
+    on = self._render_with()
+    off = self._render_with(enable_specular=False)
+    # Specular highlights show as elevated green channel (the ball is blue
+    # so its base diffuse-only green is low; specular adds neutral white).
+    # The maximum green pixel on the ball drops measurably without specular.
+    self.assertGreater(int(on[..., 1].max()), int(off[..., 1].max()) + 20)
+
+  def test_enable_emission_off_dims_geom(self):
+    """Disabling emission must dim the geom by its mat_emission * base_color."""
+    on = self._render_with()
+    off = self._render_with(enable_emission=False)
+    # The ball's blue channel includes 0.3 * 0.8 * 255 = 61 of emission.
+    # Disabling emission removes that even on pixels in shadow.
+    self.assertGreater(int(on[..., 2].mean()), int(off[..., 2].mean()))
+
+  def test_enable_per_light_ambient_off_dims_unlit_floor(self):
+    """Disabling per-light ambient must dim regions outside the light cone."""
+    on = self._render_with()
+    off = self._render_with(enable_per_light_ambient=False)
+    # The light_ambient term contributes to every pixel regardless of N.L,
+    # so disabling it must reduce overall brightness.
+    self.assertGreater(float(on.mean()), float(off.mean()))
+
+  def test_all_flags_off_still_renders(self):
+    """Turning every Phase 1 feature flag off must still produce a valid image."""
+    img = self._render_with(
+      enable_headlight=False,
+      enable_specular=False,
+      enable_emission=False,
+      enable_per_light_ambient=False,
+    )
+    # Should still see *something* (the directional light's diffuse term).
+    self.assertGreater(int(img.max()), 10)
+
 
 if __name__ == "__main__":
   wp.init()

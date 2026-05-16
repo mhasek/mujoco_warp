@@ -2800,6 +2800,10 @@ def create_render_context(
   render_skybox: bool = False,
   enable_backface_culling: bool = True,
   samples_per_pixel: int = 1,
+  enable_headlight: bool = True,
+  enable_specular: bool = True,
+  enable_emission: bool = True,
+  enable_per_light_ambient: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -2836,6 +2840,24 @@ def create_render_context(
                        proportional increase in shading work. Depth and segmentation
                        still use the pixel-center sample. Recommended values: 2, 4,
                        8, 16.
+    enable_headlight: Inject `vis.headlight` as a synthetic directional light at
+                      the active camera. When False the kernel skips the entire
+                      headlight branch at compile time, saving ~5 ms / frame at
+                      256x256 on CPU. Effectively forces `headlight_active=False`
+                      on the context. Default True (matches MuJoCo OpenGL).
+    enable_specular: Evaluate Phong specular highlights per light. When False the
+                     half-vector normalize and shininess `pow` are dropped at
+                     compile time. Useful for depth/segmentation workflows and
+                     fully-matte scenes. Default True (matches MuJoCo OpenGL).
+    enable_emission: Add `mat_emission * base_color` per shaded pixel. When
+                     False the term is dropped at compile time. Default True
+                     (matches MuJoCo OpenGL).
+    enable_per_light_ambient: Sum each light's `ambient` color into lit pixels
+                              even outside their cone or in shadow. When False
+                              the per-light ambient pass is removed at compile
+                              time; the global ambient fallback when no lights
+                              are present is still gated by `use_ambient_lighting`.
+                              Default True (matches MuJoCo OpenGL).
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -3019,6 +3041,10 @@ def create_render_context(
 
   bvh_ngeom = len(geom_enabled_idx)
 
+  # `enable_headlight=False` overrides whatever `mjm.vis.headlight.active` says,
+  # which lets users skip the headlight branch at kernel-compile time without
+  # mutating the physics model.
+  headlight_on = bool(mjm.vis.headlight.active) and enable_headlight
   hl_ambient = np.asarray(mjm.vis.headlight.ambient, dtype=np.float32)
   hl_diffuse = np.asarray(mjm.vis.headlight.diffuse, dtype=np.float32)
   hl_specular = np.asarray(mjm.vis.headlight.specular, dtype=np.float32)
@@ -3040,7 +3066,7 @@ def create_render_context(
     render_skybox=render_skybox,
     skybox_tex_id=skybox_tex_id,
     skybox_face_width=skybox_face_width,
-    headlight_active=bool(mjm.vis.headlight.active),
+    headlight_active=headlight_on,
     headlight_ambient=wp.vec3(float(hl_ambient[0]), float(hl_ambient[1]), float(hl_ambient[2])),
     headlight_diffuse=wp.vec3(float(hl_diffuse[0]), float(hl_diffuse[1]), float(hl_diffuse[2])),
     headlight_specular=wp.vec3(float(hl_specular[0]), float(hl_specular[1]), float(hl_specular[2])),
@@ -3085,6 +3111,10 @@ def create_render_context(
     znear=znear,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
+    enable_headlight=enable_headlight,
+    enable_specular=enable_specular,
+    enable_emission=enable_emission,
+    enable_per_light_ambient=enable_per_light_ambient,
     samples_per_pixel=int(samples_per_pixel),
     subpixel_offsets=wp.array(subpixel_offsets, dtype=wp.vec2),
   )

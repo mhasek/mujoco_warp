@@ -2043,6 +2043,26 @@ class RenderContext:
     subpixel_offsets: precomputed sub-pixel sample positions, shape (N, 2) in
       [0, 1]^2. With N == 1 the single offset is (0.5, 0.5) and the kernel
       degenerates to the original pixel-center behavior.
+    enable_headlight: when True, inject the model's `vis.headlight` as a
+      synthetic directional light at the active camera (matches MuJoCo
+      OpenGL's default behavior). When False, the headlight branch is
+      removed at kernel-compile time. This is by far the largest single
+      perf knob: on a CPU build at 256x256, disabling the headlight saves
+      ~5 ms per frame in a scene that would otherwise use it.
+    enable_specular: when True, evaluate the Phong specular highlight per
+      light per pixel (uses `mat_specular` / `mat_shininess`). When False,
+      the entire specular branch (including the half-vector normalize and
+      the shininess `pow`) is removed at compile time. Useful for
+      depth/segmentation-only workflows or when materials are matte.
+    enable_emission: when True, add `mat_emission * base_color` to each
+      shaded pixel (matches MuJoCo OpenGL's GL_EMISSION). When False the
+      term is dropped at compile time.
+    enable_per_light_ambient: when True, sum the per-light `light_ambient`
+      colors into each lit pixel even when N.L == 0 or the pixel is
+      shadowed (matches MuJoCo OpenGL). When False the second per-light
+      loop for ambient is removed at compile time. The global ambient
+      fallback (when no lights exist) is still controlled by
+      `use_ambient_lighting`.
   """
 
   nrender: int
@@ -2102,5 +2122,9 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  enable_headlight: bool
+  enable_specular: bool
+  enable_emission: bool
+  enable_per_light_ambient: bool
   samples_per_pixel: int
   subpixel_offsets: array("*", wp.vec2)

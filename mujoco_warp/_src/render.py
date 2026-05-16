@@ -865,26 +865,38 @@ def render(m: Model, d: Data, rc: RenderContext):
               base_color = wp.cw_mul(base_color, tex_color)
 
       # Look up material specular/shininess/emission. Flex hits have no material.
+      # Material lookups (specular / shininess / emission). The kernel reads
+      # each only when the corresponding `enable_*` flag is on at compile
+      # time; otherwise the default-zero values short-circuit the dependent
+      # branches in compute_lighting + the emission term below.
       mat_spec = float(0.5)
       mat_shin_exp = float(0.5 * 128.0)
       mat_emis = float(0.0)
-      if geom_id != -2:
-        mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
-        if mat_id_for_spec >= 0:
-          mat_spec = mat_specular[mat_id_for_spec]
-          mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
-          mat_emis = mat_emission[mat_id_for_spec]
+      if wp.static(rc.enable_specular or rc.enable_emission):
+        if geom_id != -2:
+          mat_id_for_spec = geom_matid[worldid % geom_matid.shape[0], geom_id]
+          if mat_id_for_spec >= 0:
+            if wp.static(rc.enable_specular):
+              mat_spec = mat_specular[mat_id_for_spec]
+              mat_shin_exp = mat_shininess[mat_id_for_spec] * 128.0
+            if wp.static(rc.enable_emission):
+              mat_emis = mat_emission[mat_id_for_spec]
+      if wp.static(not rc.enable_specular):
+        mat_spec = 0.0  # disables the inner specular branch in compute_lighting
 
-      sample_rgb = base_color * mat_emis
+      sample_rgb = wp.vec3(0.0, 0.0, 0.0)
+      if wp.static(rc.enable_emission):
+        sample_rgb = base_color * mat_emis
 
       if wp.static(rc.use_ambient_lighting):
         if wp.static(rc.headlight_active):
           sample_rgb = sample_rgb + wp.cw_mul(base_color, wp.static(rc.headlight_ambient))
         elif wp.static(m.nlight == 0):
           sample_rgb = sample_rgb + base_color * 0.3
-        for la in range(wp.static(m.nlight)):
-          if light_active[worldid % light_active.shape[0], la]:
-            sample_rgb = sample_rgb + wp.cw_mul(base_color, light_ambient[la])
+        if wp.static(rc.enable_per_light_ambient):
+          for la in range(wp.static(m.nlight)):
+            if light_active[worldid % light_active.shape[0], la]:
+              sample_rgb = sample_rgb + wp.cw_mul(base_color, light_ambient[la])
 
       view_dir = wp.normalize(-ray_dir_world)
 
