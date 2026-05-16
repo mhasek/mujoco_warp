@@ -54,8 +54,13 @@ def _unpack_rgb(packed: np.ndarray) -> np.ndarray:
   return np.stack([r, g, b], axis=-1)
 
 
-def _mjwarp_render(mjm: mujoco.MjModel, cam_w: int, cam_h: int) -> np.ndarray:
-  """Render `mjm` with mjwarp and return an HxWx3 uint8 RGB image (world 0)."""
+def _mjwarp_render(mjm: mujoco.MjModel, cam_w: int, cam_h: int, use_shadows: bool = True) -> np.ndarray:
+  """Render `mjm` with mjwarp and return an HxWx3 uint8 RGB image (world 0).
+
+  Defaults to `use_shadows=True` so the parity comparison matches
+  `mujoco.Renderer`'s default (`mjRND_SHADOW == 1`). Pass `use_shadows=False`
+  explicitly when isolating shading from occlusion.
+  """
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -65,7 +70,7 @@ def _mjwarp_render(mjm: mujoco.MjModel, cam_w: int, cam_h: int) -> np.ndarray:
     mjm,
     cam_res=(cam_w, cam_h),
     render_rgb=True,
-    use_shadows=False,
+    use_shadows=use_shadows,
   )
   mjw.render(m, d, rc)
   rgb = _unpack_rgb(rc.rgb_data.numpy()[0])
@@ -335,9 +340,9 @@ class RenderParityTest(parameterized.TestCase):
   # be obviously something specific (e.g. a sign flip in compute_lighting).
   _PARITY_FIXTURES = (
     ("headlight_only", _FIXTURE_HEADLIGHT_ONLY, 0.92, 0.02),
-    ("spotlight", _FIXTURE_SPOTLIGHT, 0.78, 0.06),
+    ("spotlight", _FIXTURE_SPOTLIGHT, 0.85, 0.04),
     ("specular", _FIXTURE_SPECULAR, 0.90, 0.02),
-    ("two_lights", _FIXTURE_TWO_LIGHTS, 0.88, 0.03),
+    ("two_lights", _FIXTURE_TWO_LIGHTS, 0.95, 0.02),
     ("emission", _FIXTURE_EMISSION, 0.92, 0.02),
   )
 
