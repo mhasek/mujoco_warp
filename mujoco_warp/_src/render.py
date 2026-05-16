@@ -531,18 +531,24 @@ def compute_lighting(
   mat_spec: float,
   mat_shin_exp: float,
   cull_backfaces: bool,
-) -> wp.vec3:
-  # Phong lighting matching the MuJoCo OpenGL pipeline:
+) -> Tuple[wp.vec3, wp.vec3]:
+  # Blinn-Phong lighting matching the MuJoCo OpenGL fixed-function pipeline:
   #   atten = 1 / (a0 + a1 * d + a2 * d²) for non-directional lights;
   #   spot lights additionally attenuate by cos(θ)^exponent inside the cone;
-  #   specular highlight = mat_spec * (max(0, R · V))^mat_shin_exp,
-  #   where R = reflect(-L, N) and V = direction from hit to camera.
-  result = wp.vec3(0.0, 0.0, 0.0)
+  #   diffuse contribution = lightdiff * (N · L) (caller modulates by base color);
+  #   specular highlight = lightspec * mat_spec * (max(0, N · H))^mat_shin_exp,
+  #     where H = normalize(L + V) and V = direction from hit to camera.
+  # The two terms are returned separately so the caller can tint the diffuse
+  # term by the surface's base color while leaving the specular highlight
+  # untinted (matching `glColorMaterial(GL_AMBIENT_AND_DIFFUSE)` in OpenGL).
+  zero = wp.vec3(0.0, 0.0, 0.0)
+  diff_rgb = zero
+  spec_rgb = zero
 
   # TODO: We should probably only be looping over active lights
   # in the first place with a static loop of enabled light idx?
   if not lightactive:
-    return result
+    return diff_rgb, spec_rgb
 
   L = wp.vec3(0.0, 0.0, 0.0)
   dist_to_light = float(MJ_MAXVAL)
@@ -560,12 +566,12 @@ def compute_lighting(
       cos_theta = wp.dot(-L, spot_dir)
       cos_cutoff = wp.cos(lightcutoff_rad)
       if cos_theta < cos_cutoff:
-        return result
+        return diff_rgb, spec_rgb
       atten = atten * wp.pow(wp.max(cos_theta, 0.0), lightexp)
 
   ndotl = wp.max(0.0, wp.dot(normal, L))
   if ndotl == 0.0:
-    return result
+    return diff_rgb, spec_rgb
 
   visible = float(1.0)
 
@@ -613,14 +619,17 @@ def compute_lighting(
       # feature.
       visible = 0.0
 
-  diffuse_contrib = ndotl * atten * visible
-  spec_contrib = float(0.0)
+  weight = atten * visible
+  diff_rgb = lightdiff * (ndotl * weight)
   if mat_spec > 0.0 and mat_shin_exp > 0.0:
-    R = 2.0 * ndotl * normal - L
-    rdotv = wp.max(0.0, wp.dot(R, view_dir))
-    spec_contrib = mat_spec * wp.pow(rdotv, mat_shin_exp) * atten * visible
+    # Blinn-Phong half-vector: matches OpenGL's GL_LIGHT_MODEL_LOCAL_VIEWER=0
+    # fixed-function pipeline. Note that the OpenGL spec also gates the
+    # specular by step(N·L > 0); we already returned early when ndotl == 0.
+    H = wp.normalize(L + view_dir)
+    ndoth = wp.max(0.0, wp.dot(normal, H))
+    spec_rgb = lightspec * (mat_spec * wp.pow(ndoth, mat_shin_exp) * weight)
 
-  return lightdiff * diffuse_contrib + lightspec * spec_contrib
+  return diff_rgb, spec_rgb
 
 
 @event_scope
@@ -881,7 +890,7 @@ def render(m: Model, d: Data, rc: RenderContext):
 
       for l in range(wp.static(m.nlight)):
         cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
-        light_contribution = compute_lighting(
+        diff_rgb, spec_rgb = compute_lighting(
           geom_type,
           geom_dataid,
           geom_size,
@@ -921,12 +930,15 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
         )
-        sample_rgb = sample_rgb + wp.cw_mul(base_color, light_contribution)
+        # Diffuse modulated by base color (matches `glColorMaterial(AMBIENT_AND_DIFFUSE)`);
+        # specular is left at the light/material's specular color (matches OpenGL's
+        # mat-specular = (s, s, s, 1) set via `glMaterialfv(GL_SPECULAR, ...)`).
+        sample_rgb = sample_rgb + wp.cw_mul(base_color, diff_rgb) + spec_rgb
 
       if wp.static(rc.headlight_active):
         cam_pos = ray_origin_world
         cam_fwd = wp.vec3(-cam_mat_world[0, 2], -cam_mat_world[1, 2], -cam_mat_world[2, 2])
-        hl_contrib = compute_lighting(
+        hl_diff, hl_spec = compute_lighting(
           geom_type,
           geom_dataid,
           geom_size,
@@ -966,7 +978,7 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
         )
-        sample_rgb = sample_rgb + wp.cw_mul(base_color, hl_contrib)
+        sample_rgb = sample_rgb + wp.cw_mul(base_color, hl_diff) + hl_spec
 
       rgb_accum = rgb_accum + sample_rgb
 
