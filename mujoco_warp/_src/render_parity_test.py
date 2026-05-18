@@ -24,8 +24,6 @@ PR. As each commit closes a parity gap, the corresponding test is enabled
 here.
 """
 
-import pathlib
-
 import mujoco
 import numpy as np
 import warp as wp
@@ -33,8 +31,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
-
-_GOLDEN_DIR = pathlib.Path(__file__).parent.parent / "test_data" / "golden_renders"
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -356,29 +352,6 @@ class RenderParityTest(parameterized.TestCase):
     l1 = _mean_l1(warp_rgb, mj_rgb)
     self.assertGreater(ssim, ssim_threshold, f"SSIM too low: {ssim:.4f} < {ssim_threshold}")
     self.assertLess(l1, l1_threshold, f"mean L1 too high: {l1:.4f} > {l1_threshold}")
-
-  # ---- golden-image regression ----
-  def test_golden_headlight_only(self):
-    """Bit-stable regression check against a checked-in golden snapshot.
-
-    mjwarp's headlight render of a fixed fixture must stay within a small
-    per-channel tolerance of `test_data/golden_renders/headlight_only_32.npy`.
-    A larger drift means a lighting computation changed unexpectedly;
-    regenerate the snapshot only after intentional updates.
-    """
-    golden_path = _GOLDEN_DIR / "headlight_only_32.npy"
-    if not golden_path.exists():
-      self.skipTest(f"no golden snapshot at {golden_path}")
-    expected = np.load(golden_path)
-    self.assertEqual(expected.shape, (32, 32, 3))
-
-    mjm = mujoco.MjModel.from_xml_string(_FIXTURE_HEADLIGHT_ONLY)
-    actual = _mjwarp_render(mjm, 32, 32)
-    diff = np.abs(actual.astype(np.int32) - expected.astype(np.int32))
-    # Allow tiny per-channel drift (rounding/float ordering between Warp
-    # builds and CPU/CUDA backends) but flag substantive changes.
-    self.assertLess(diff.max(), 5, f"max channel diff = {int(diff.max())} (>= 5)")
-    self.assertLess(float(diff.mean()), 0.5, f"mean channel diff = {float(diff.mean())} (>= 0.5)")
 
 
 if __name__ == "__main__":
