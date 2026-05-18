@@ -556,15 +556,18 @@ def compute_lighting(
   atten = float(1.0)
 
   if lighttype == 1:  # directional light
-    L = wp.normalize(-lightdir)
-    # Directional lights ignore distance attenuation in MuJoCo OpenGL.
+    # `lightdir` is already unit-length: mjModel.light_dir is stored as a
+    # unit vector and mj_kinematics propagates it to mjData.light_xdir via
+    # a rotation, which preserves the norm. Same for the spot-light branch
+    # below; the `wp.normalize(lightdir)` calls in earlier versions of this
+    # file were redundant sqrt's.
+    L = -lightdir
   else:
     L, dist_to_light = math.normalize_with_norm(lightpos - hitpoint)
     denom = lightatten[0] + lightatten[1] * dist_to_light + lightatten[2] * dist_to_light * dist_to_light
     atten = 1.0 / wp.max(denom, 1.0e-6)
     if lighttype == 0:  # spot light
-      spot_dir = wp.normalize(lightdir)
-      cos_theta = wp.dot(-L, spot_dir)
+      cos_theta = wp.dot(-L, lightdir)
       cos_cutoff = wp.cos(lightcutoff_rad)
       if cos_theta < cos_cutoff:
         return diff_rgb, spec_rgb
@@ -900,9 +903,12 @@ def render(m: Model, d: Data, rc: RenderContext):
             if light_active[worldid % light_active.shape[0], la]:
               sample_rgb = sample_rgb + wp.cw_mul(base_color, light_ambient[la])
 
-      view_dir = wp.vec3(0.0, 0.0, 0.0)
-      if wp.static(rc.enable_specular):
-        view_dir = wp.normalize(-ray_dir_world)
+      # `ray_dir_world = cam_xmat_in[...] @ ray_dir_local_cam`, and
+      # `ray_dir_local_cam` is unit-length (compute_ray_subpixel returns a
+      # normalized vector). Rotations preserve norms so the world ray is
+      # also unit-length; the historical `wp.normalize(-ray_dir_world)` was
+      # a redundant sqrt per pixel.
+      view_dir = -ray_dir_world
 
       for l in range(wp.static(m.nlight)):
         cutoff_rad = light_cutoff[l] * wp.static(float(wp.pi) / 180.0)
