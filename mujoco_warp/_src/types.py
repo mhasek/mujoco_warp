@@ -2043,6 +2043,14 @@ class RenderContext:
     subpixel_offsets: precomputed sub-pixel sample positions, shape (N, 2) in
       [0, 1]^2. With N == 1 the single offset is (0.5, 0.5) and the kernel
       degenerates to the original pixel-center behavior.
+    light_attenuation_is_default: True iff every light in the model has the
+      MuJoCo default `attenuation = (1, 0, 0)`. Computed once at context
+      creation; when True the kernel skips the per-light polynomial
+      attenuation evaluation (a divide + 3 multiplies + an add per
+      non-directional light per pixel) via `wp.static`.
+    has_spot_lights: True iff any light in the model has `type == SPOT`.
+      When False, the kernel skips the spot-cone branch (cos cutoff +
+      pow exponent) per non-directional light per pixel via `wp.static`.
     enable_headlight: when True, inject the model's `vis.headlight` as a
       synthetic directional light at the active camera (matches MuJoCo
       OpenGL's default behavior). When False, the headlight branch is
@@ -2126,5 +2134,7 @@ class RenderContext:
   enable_specular: bool
   enable_emission: bool
   enable_per_light_ambient: bool
+  light_attenuation_is_default: bool
+  has_spot_lights: bool
   samples_per_pixel: int
   subpixel_offsets: array("*", wp.vec2)

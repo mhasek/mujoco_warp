@@ -532,6 +532,8 @@ def compute_lighting(
   mat_shin_exp: float,
   cull_backfaces: bool,
   enable_specular: bool,
+  default_attenuation: bool,
+  has_spot: bool,
 ) -> Tuple[wp.vec3, wp.vec3]:
   # Blinn-Phong lighting matching the MuJoCo OpenGL fixed-function pipeline:
   #   atten = 1 / (a0 + a1 * d + a2 * d²) for non-directional lights;
@@ -564,14 +566,21 @@ def compute_lighting(
     L = -lightdir
   else:
     L, dist_to_light = math.normalize_with_norm(lightpos - hitpoint)
-    denom = lightatten[0] + lightatten[1] * dist_to_light + lightatten[2] * dist_to_light * dist_to_light
-    atten = 1.0 / wp.max(denom, 1.0e-6)
-    if lighttype == 0:  # spot light
-      cos_theta = wp.dot(-L, lightdir)
-      cos_cutoff = wp.cos(lightcutoff_rad)
-      if cos_theta < cos_cutoff:
-        return diff_rgb, spec_rgb
-      atten = atten * wp.pow(wp.max(cos_theta, 0.0), lightexp)
+    # When every light in the model uses the default attenuation (1, 0, 0),
+    # skip the polynomial eval + divide entirely (atten stays 1.0).
+    if not default_attenuation:
+      denom = lightatten[0] + lightatten[1] * dist_to_light + lightatten[2] * dist_to_light * dist_to_light
+      atten = 1.0 / wp.max(denom, 1.0e-6)
+    # Spot-cone branch is only reachable if any light in the model is a
+    # spot light. When the model has no spot lights, `has_spot` is False
+    # and the entire cone-test + pow is eliminated at kernel-compile time.
+    if has_spot:
+      if lighttype == 0:  # spot light
+        cos_theta = wp.dot(-L, lightdir)
+        cos_cutoff = wp.cos(lightcutoff_rad)
+        if cos_theta < cos_cutoff:
+          return diff_rgb, spec_rgb
+        atten = atten * wp.pow(wp.max(cos_theta, 0.0), lightexp)
 
   ndotl = wp.max(0.0, wp.dot(normal, L))
   if ndotl == 0.0:
@@ -952,6 +961,8 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
           wp.static(rc.enable_specular),
+          wp.static(rc.light_attenuation_is_default),
+          wp.static(rc.has_spot_lights),
         )
         # Diffuse modulated by base color (matches `glColorMaterial(AMBIENT_AND_DIFFUSE)`);
         # specular is left at the light/material's specular color (matches OpenGL's
@@ -1001,6 +1012,10 @@ def render(m: Model, d: Data, rc: RenderContext):
           mat_shin_exp,
           wp.static(rc.enable_backface_culling),
           wp.static(rc.enable_specular),
+          # Headlight is always directional with default attenuation (1, 0, 0)
+          # and never a spot light, so both static-elimination flags are True.
+          True,
+          False,
         )
         sample_rgb = sample_rgb + wp.cw_mul(base_color, hl_diff) + hl_spec
 

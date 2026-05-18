@@ -3049,6 +3049,18 @@ def create_render_context(
   hl_diffuse = np.asarray(mjm.vis.headlight.diffuse, dtype=np.float32)
   hl_specular = np.asarray(mjm.vis.headlight.specular, dtype=np.float32)
 
+  # Cheap model-level checks that let the kernel statically skip lighting
+  # branches when the model uses the MuJoCo defaults. Both flags are
+  # baseline-True for the empty `nlight == 0` case so a no-light scene
+  # gets the cheapest code path.
+  if mjm.nlight == 0:
+    light_attenuation_is_default = True
+    has_spot_lights = False
+  else:
+    atten = np.asarray(mjm.light_attenuation, dtype=np.float32).reshape(-1, 3)
+    light_attenuation_is_default = bool(np.allclose(atten, np.array([1.0, 0.0, 0.0], dtype=np.float32)))
+    has_spot_lights = bool((np.asarray(mjm.light_type) == int(mujoco.mjtLightType.mjLIGHT_SPOT)).any())
+
   rc = types.RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
@@ -3115,6 +3127,8 @@ def create_render_context(
     enable_specular=enable_specular,
     enable_emission=enable_emission,
     enable_per_light_ambient=enable_per_light_ambient,
+    light_attenuation_is_default=light_attenuation_is_default,
+    has_spot_lights=has_spot_lights,
     samples_per_pixel=int(samples_per_pixel),
     subpixel_offsets=wp.array(subpixel_offsets, dtype=wp.vec2),
   )
