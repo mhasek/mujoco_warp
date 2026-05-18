@@ -2763,10 +2763,15 @@ def _build_rays(
 
 
 def _halton_subpixel_offsets(n: int) -> np.ndarray:
-  """Generate N sub-pixel sample offsets in [0, 1]^2 via the Halton(2, 3) sequence.
+  """Generate N sub-pixel sample offsets in [0, 1]^2 for supersampling AA.
 
-  Returns an `(N, 2)` float32 array. n==1 returns the pixel center `(0.5, 0.5)`
-  to match the old non-MSAA behavior exactly.
+  Offset 0 is always pinned to the pixel center `(0.5, 0.5)` so the
+  kernel's fast path of reading the pre-computed pixel-center ray at
+  sample 0 matches what this table claims. The remaining `n - 1`
+  offsets come from the Halton(2, 3) low-discrepancy sequence so the
+  samples spread evenly across the pixel.
+
+  Returns an `(n, 2)` float32 array.
   """
   if n == 1:
     return np.array([[0.5, 0.5]], dtype=np.float32)
@@ -2779,7 +2784,12 @@ def _halton_subpixel_offsets(n: int) -> np.ndarray:
       i //= b
     return r
 
-  pts = np.array([[_halton(i + 1, 2), _halton(i + 1, 3)] for i in range(n)], dtype=np.float32)
+  pts = np.empty((n, 2), dtype=np.float32)
+  pts[0] = (0.5, 0.5)
+  # Halton(2, 3) starting at index 1 (index 0 is the (0, 0) corner; index 1 is
+  # the first non-trivial point and gives a spread that complements center).
+  for i in range(1, n):
+    pts[i] = (_halton(i, 2), _halton(i, 3))
   return pts
 
 
